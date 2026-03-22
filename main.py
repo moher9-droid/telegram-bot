@@ -8,7 +8,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 # =========================
 # Config
 # =========================
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+BOT_TOKEN = os.environ.get("MY_TOKEN", "").strip()
 print("BOT_TOKEN loaded?", bool(BOT_TOKEN))
 print("BOT_TOKEN length:", len(BOT_TOKEN))
 ADMIN_ID = 169522781
