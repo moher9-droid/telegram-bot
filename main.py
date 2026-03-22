@@ -1,15 +1,25 @@
 import os
 import asyncio
+import logging
 import pandas as pd
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# =========================
+# Config
+# =========================
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 ADMIN_ID = 169522781
 
 FILE_PATH = "equipment.xlsx"
 USERS_FILE = "users.txt"
-BOT_VERSION = "2.2"
+BOT_VERSION = "2.3"
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 
 # =========================
@@ -212,9 +222,7 @@ def get_lang(context: ContextTypes.DEFAULT_TYPE) -> str:
 def t(context: ContextTypes.DEFAULT_TYPE, key: str, **kwargs) -> str:
     lang = get_lang(context)
     text = TEXTS[lang][key]
-    if kwargs:
-        return text.format(**kwargs)
-    return text
+    return text.format(**kwargs) if kwargs else text
 
 
 def is_admin(user_id: int) -> bool:
@@ -267,7 +275,13 @@ def get_broadcast_keyboard(context: ContextTypes.DEFAULT_TYPE):
 # =========================
 # Load Data
 # =========================
+def ensure_excel_exists():
+    if not os.path.exists(FILE_PATH):
+        raise FileNotFoundError(f"{FILE_PATH} not found")
+
+
 def load_projects_data():
+    ensure_excel_exists()
     df = pd.read_excel(FILE_PATH, sheet_name="Equipment_Master", dtype=str)
     df.columns = df.columns.str.strip()
 
@@ -282,6 +296,7 @@ def load_projects_data():
 
 
 def load_tankers_data():
+    ensure_excel_exists()
     df = pd.read_excel(FILE_PATH, sheet_name="Regional_Tankers", dtype=str)
     df.columns = df.columns.str.strip()
 
@@ -322,32 +337,29 @@ def search_plate_in_projects(text: str):
     df = load_projects_data()
     clean_text = text.replace(" ", "").lower()
 
-    result = df[
+    return df[
         df["Plate_No"]
         .str.replace(" ", "", regex=False)
         .str.lower()
         .str.contains(clean_text, na=False)
     ]
-    return result
 
 
 def search_plate_in_tankers(text: str):
     df = load_tankers_data()
     clean_text = text.replace(" ", "").lower()
 
-    result = df[
+    return df[
         df["Plate_No"]
         .str.replace(" ", "", regex=False)
         .str.lower()
         .str.contains(clean_text, na=False)
     ]
-    return result
 
 
 def get_tankers_by_region(region_name: str):
     df = load_tankers_data()
-    result = df[df["Region"].str.strip().str.lower() == region_name.lower()]
-    return result
+    return df[df["Region"].str.strip().str.lower() == region_name.lower()]
 
 
 # =========================
@@ -401,7 +413,6 @@ async def show_projects(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_project_equipment(update: Update, context: ContextTypes.DEFAULT_TYPE, project_name: str):
     df = load_projects_data()
-
     project_result = df[df["Project_Name"].str.strip().str.lower() == project_name.lower()]
 
     if project_result.empty:
@@ -490,6 +501,7 @@ async def count_equipment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def send_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ensure_excel_exists()
     with open(FILE_PATH, "rb") as f:
         await update.message.reply_document(f, filename="equipment.xlsx")
 
@@ -536,10 +548,11 @@ async def run_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE, mess
         try:
             await context.bot.send_message(chat_id=target_user_id, text=message_text)
             success += 1
-        except Exception:
+        except Exception as e:
+            logger.warning("Broadcast failed to %s: %s", target_user_id, e)
             failed += 1
 
-        await asyncio.sleep(10)
+        await asyncio.sleep(0.2)
 
     context.user_data["broadcast_mode"] = False
 
@@ -606,7 +619,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(user_id)
 
     try:
-        # Broadcast mode
         if context.user_data.get("broadcast_mode", False):
             if text == TEXTS[get_lang(context)]["cancel_broadcast"]:
                 await cancel_broadcast(update, context)
@@ -615,7 +627,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await run_broadcast(update, context, text)
             return
 
-        # Language selection
         if text == "🌐 Language":
             await update.message.reply_text(
                 t(context, "language_menu"),
@@ -639,12 +650,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Broadcast button
         if text in [TEXTS["en"]["broadcast_btn"], TEXTS["ar"]["broadcast_btn"]]:
             await start_broadcast(update, context)
             return
 
-        # Main buttons in English/Arabic
         if text in ["🔍 Search Plate", "🔍 البحث عن لوحة"]:
             context.user_data["mode"] = "search"
             await update.message.reply_text(
@@ -681,12 +690,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Project name direct click
         if text in get_projects():
             await show_project_equipment(update, context, text)
             return
 
-        # Regions in English/Arabic
         if text in ["📍 Eastern", "📍 الشرقية"]:
             await show_region_tankers(update, context, "Eastern")
             return
@@ -699,7 +706,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_region_tankers(update, context, "Western")
             return
 
-        # Default: search by plate
         await search_plate(update, context, text)
 
     except FileNotFoundError:
@@ -715,6 +721,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     except Exception as e:
+        logger.exception("Unexpected error in handle_message")
         await update.message.reply_text(
             t(context, "unexpected_error", error=str(e)),
             reply_markup=get_main_keyboard(context, user_id)
@@ -725,6 +732,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Main
 # =========================
 def main():
+    if not BOT_TOKEN:
+        raise ValueError("BOT_TOKEN is missing. Add it in Railway Variables.")
+
+    if ":" not in BOT_TOKEN:
+        raise ValueError("BOT_TOKEN format looks invalid. Check the token from BotFather.")
+
+    logger.info("Starting bot version %s", BOT_VERSION)
+    logger.info("Excel file exists: %s", os.path.exists(FILE_PATH))
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
